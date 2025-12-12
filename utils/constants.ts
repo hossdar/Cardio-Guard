@@ -74,7 +74,7 @@ You are Dr. Beat, performing a FINAL MULTI-MODAL CARDIAC ASSESSMENT.
 4. **Recommendation**: Next steps.
 `;
 
-export const GEMINI_LIVE_MODEL = 'gemini-2.5-flash-native-audio-preview-09-2025';
+export const GEMINI_LIVE_MODEL = 'gemini-live-2.5-flash-preview-native-audio-09-2025';
 export const GEMINI_PRO_MODEL = 'gemini-3-pro-preview';
 export const RPPG_API_URL = 'https://rppg-api-453532348380.us-central1.run.app/api/v1/vitals/extract';
 

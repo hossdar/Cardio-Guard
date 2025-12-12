@@ -9,14 +9,14 @@ export const useGeminiLive = (isActive: boolean) => {
   const [isConnected, setIsConnected] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  
+
   const sessionRef = useRef<Promise<any> | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const inputSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const nextStartTimeRef = useRef<number>(0);
-  
+
   const { addMessage, setPhase, addClinicalItem } = useSessionStore();
 
   const cleanup = useCallback(async () => {
@@ -38,19 +38,19 @@ export const useGeminiLive = (isActive: boolean) => {
       }
       audioContextRef.current = null;
     }
-    
+
     if (sessionRef.current) {
-       try {
-         const session = await sessionRef.current;
-         if (session && typeof session.close === 'function') {
-            session.close();
-         }
-       } catch (e) {
-         console.warn("Session close error", e);
-       }
-       sessionRef.current = null;
+      try {
+        const session = await sessionRef.current;
+        if (session && typeof session.close === 'function') {
+          session.close();
+        }
+      } catch (e) {
+        console.warn("Session close error", e);
+      }
+      sessionRef.current = null;
     }
-    
+
     setIsConnected(false);
     setIsSpeaking(false);
   }, []);
@@ -63,18 +63,23 @@ export const useGeminiLive = (isActive: boolean) => {
 
     try {
       setError(null);
-      
+      nextStartTimeRef.current = 0;
+
       // 1. Setup Audio Output Context
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       const audioContext = new AudioContextClass({ sampleRate: 24000 }); // Try to match model output
       audioContextRef.current = audioContext;
 
+      if (audioContext.state === 'suspended') {
+        audioContext.resume().catch(console.error);
+      }
+
       // 2. Microphone Input (16kHz preferred for Gemini)
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: { 
-            channelCount: 1,
-            sampleRate: 16000 
-        } 
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          sampleRate: 16000
+        }
       });
       streamRef.current = stream;
 
@@ -83,7 +88,7 @@ export const useGeminiLive = (isActive: boolean) => {
       const source = inputContext.createMediaStreamSource(stream);
       // Buffer size 4096 gives approx 250ms chunks at 16k
       const processor = inputContext.createScriptProcessor(4096, 1, 1);
-      
+
       inputSourceRef.current = source;
       processorRef.current = processor;
 
@@ -100,23 +105,23 @@ export const useGeminiLive = (isActive: boolean) => {
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
           },
-          inputAudioTranscription: {}, 
-          outputAudioTranscription: {}, 
+          inputAudioTranscription: {},
+          outputAudioTranscription: {},
         },
         callbacks: {
           onopen: async () => {
             console.log("Gemini Live Connection Opened");
             setIsConnected(true);
             addMessage({ sender: 'system', text: "Dr. Sara connected." });
-            
+
             processor.onaudioprocess = (e) => {
               const inputData = e.inputBuffer.getChannelData(0);
               const pcmInt16 = float32ToInt16(inputData);
-              const base64Data = arrayBufferToBase64(pcmInt16.buffer);
-              
+              const base64Data = arrayBufferToBase64(pcmInt16.buffer as ArrayBuffer);
+
               sessionPromise.then(session => {
                 session.sendRealtimeInput({
-                    media: { mimeType: 'audio/pcm;rate=16000', data: base64Data },
+                  media: { mimeType: 'audio/pcm;rate=16000', data: base64Data },
                 });
               });
             };
@@ -125,20 +130,23 @@ export const useGeminiLive = (isActive: boolean) => {
             // Check for Audio Output
             const audioData = msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
             if (audioData && audioContextRef.current) {
-              
+
               // RESUME CONTEXT: Critical for Chrome autoplay policy
               if (audioContextRef.current.state === 'suspended') {
-                  await audioContextRef.current.resume();
+                console.log("Resuming suspended AudioContext...");
+                await audioContextRef.current.resume();
               }
+
+              console.log("Received Audio Chunk:", audioData.length, "bytes");
 
               setIsSpeaking(true);
               const audioBytes = base64ToUint8Array(audioData);
               const int16Array = new Int16Array(audioBytes.buffer);
-              
+
               // Gemini returns raw PCM at 24000Hz
               const audioBuffer = audioContextRef.current.createBuffer(1, int16Array.length, 24000);
               const channelData = audioBuffer.getChannelData(0);
-              
+
               for (let i = 0; i < int16Array.length; i++) {
                 channelData[i] = int16Array[i] / 32768.0;
               }
@@ -146,51 +154,52 @@ export const useGeminiLive = (isActive: boolean) => {
               const source = audioContextRef.current.createBufferSource();
               source.buffer = audioBuffer;
               source.connect(audioContextRef.current.destination);
-              
+
               const currentTime = audioContextRef.current.currentTime;
               // If nextStartTime is way behind (lag), reset it to now
               if (nextStartTimeRef.current < currentTime) {
-                  nextStartTimeRef.current = currentTime;
+                nextStartTimeRef.current = currentTime;
               }
-              
+
               source.start(nextStartTimeRef.current);
+              console.log("Scheduling audio at:", nextStartTimeRef.current, "Current Time:", currentTime);
               nextStartTimeRef.current += audioBuffer.duration;
-              
+
               source.onended = () => {
-                 // Slight buffer for state update
-                 if (audioContextRef.current && audioContextRef.current.currentTime >= nextStartTimeRef.current - 0.2) {
-                     setIsSpeaking(false);
-                 }
+                // Slight buffer for state update
+                if (audioContextRef.current && audioContextRef.current.currentTime >= nextStartTimeRef.current - 0.2) {
+                  setIsSpeaking(false);
+                }
               };
             }
 
             if (msg.serverContent?.turnComplete) {
-                 setIsSpeaking(false);
-                 nextStartTimeRef.current = audioContextRef.current?.currentTime || 0;
+              setIsSpeaking(false);
+              // Do not reset nextStartTimeRef here, rely on the lag check in the next turn to catch up.
             }
-            
+
             // Process Transcripts
             if (msg.serverContent?.outputTranscription?.text) {
-                const text = msg.serverContent.outputTranscription.text;
-                addMessage({ sender: 'agent', agentName: 'Sara', text: text });
-                
-                const lowerText = text.toLowerCase();
-                if (lowerText.includes("dr. beat") || lowerText.includes("connect you") || lowerText.includes("specialist")) {
-                   setTimeout(() => setPhase('transition_to_beat'), 4000);
-                }
+              const text = msg.serverContent.outputTranscription.text;
+              addMessage({ sender: 'agent', agentName: 'Sara', text: text });
+
+              const lowerText = text.toLowerCase();
+              if (lowerText.includes("dr. beat") || lowerText.includes("connect you") || lowerText.includes("specialist")) {
+                setTimeout(() => setPhase('transition_to_beat'), 4000);
+              }
             }
             if (msg.serverContent?.inputTranscription?.text) {
-                const userText = msg.serverContent.inputTranscription.text;
-                addMessage({ sender: 'user', text: userText });
-                
-                if (userText.length > 5) {
-                    addClinicalItem({
-                        category: 'Symptom',
-                        name: 'Patient Report',
-                        description: userText,
-                        status: 'Recorded'
-                    });
-                }
+              const userText = msg.serverContent.inputTranscription.text;
+              addMessage({ sender: 'user', text: userText });
+
+              if (userText.length > 5) {
+                addClinicalItem({
+                  category: 'Symptom',
+                  name: 'Patient Report',
+                  description: userText,
+                  status: 'Recorded'
+                });
+              }
             }
           },
           onclose: () => {
