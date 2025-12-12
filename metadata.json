@@ -1,0 +1,8 @@
+{
+  "name": "Cardio Guardian",
+  "description": "A multi-agent conversational cardiac screening tool utilizing Gemini Live, Gemini 3 Pro, and rPPG technologies.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
